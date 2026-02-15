@@ -1,0 +1,316 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+# This workflow will build, test, sign and package a WPF or Windows Forms desktop application
+# built on .NET Core.
+# To learn how to migrate your existing application to .NET Core,
+# refer to https://docs.microsoft.com/en-us/dotnet/desktop-wpf/migration/convert-project-from-net-framework
+#
+# To configure this workflow:
+#
+# 1. Configure environment variables
+# GitHub sets default environment variables for every workflow run.
+# Replace the variables relative to your project in the "env" section below.
+#
+# 2. Signing
+# Generate a signing certificate in the Windows Application
+# Packaging Project or add an existing signing certificate to the project.
+# Next, use PowerShell to encode the .pfx file using Base64 encoding
+# by running the following Powershell script to generate the output string:
+#
+# $pfx_cert = Get-Content '.\SigningCertificate.pfx' -Encoding Byte
+# [System.Convert]::ToBase64String($pfx_cert) | Out-File 'SigningCertificate_Encoded.txt'
+#
+# Open the output file, SigningCertificate_Encoded.txt, and copy the
+# string inside. Then, add the string to the repo as a GitHub secret
+# and name it "Base64_Encoded_Pfx."
+# For more information on how to configure your signing certificate for
+# this workflow, refer to https://github.com/microsoft/github-actions-for-desktop-apps#signing
+#
+# Finally, add the signing certificate password to the repo as a secret and name it "Pfx_Key".
+# See "Build the Windows Application Packaging project" below to see how the secret is used.
+#
+# For more information on GitHub Actions, refer to https://github.com/features/actions
+# For a complete CI/CD sample to get started with GitHub Action workflows for Desktop Applications,
+# refer to https://github.com/microsoft/github-actions-for-desktop-apps
+
+name: .NET Core Desktop
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
+
+    runs-on: windows-latest  # For a list of available runner types, refer to
+                             # https://help.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idruns-on
+
+    env:
+      Solution_Name: your-solution-name                         # Replace with your solution name, i.e. MyWpfApp.sln.
+      Test_Project_Path: your-test-project-path                 # Replace with the path to your test project, i.e. MyWpfApp.Tests\MyWpfApp.Tests.csproj.
+      Wap_Project_Directory: your-wap-project-directory-name    # Replace with the Wap project directory relative to the solution, i.e. MyWpfApp.Package.
+      Wap_Project_Path: your-wap-project-path                   # Replace with the path to your Wap project, i.e. MyWpf.App.Package\MyWpfApp.Package.wapproj.
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    # Install the .NET Core workload
+    - name: Install .NET Core
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # Add  MSBuild to the PATH: https://github.com/microsoft/setup-msbuild
+    - name: Setup MSBuild.exe
+      uses: microsoft/setup-msbuild@v2
+
+    # Execute all unit tests in the solution
+    - name: Execute unit tests
+      run: dotnet test
+
+    # Restore the application to populate the obj folder with RuntimeIdentifiers
+    - name: Restore the application
+      run: msbuild $env:Solution_Name /t:Restore /p:Configuration=$env:Configuration
+      env:
+        Configuration: ${{ matrix.configuration }}
+
+    # Decode the base 64 encoded pfx and save the Signing_Certificate
+    - name: Decode the pfx
+      run: |
+        $pfx_cert_byte = [System.Convert]::FromBase64String("${{ secrets.Base64_Encoded_Pfx }}")
+        $certificatePath = Join-Path -Path $env:Wap_Project_Directory -ChildPath GitHubActionsWorkflow.pfx
+        [IO.File]::WriteAllBytes("$certificatePath", $pfx_cert_byte)
+
+    # Create the app package by building and packaging the Windows Application Packaging project
+    - name: Create the app package
+      run: msbuild $env:Wap_Project_Path /p:Configuration=$env:Configuration /p:UapAppxPackageBuildMode=$env:Appx_Package_Build_Mode /p:AppxBundle=$env:Appx_Bundle /p:PackageCertificateKeyFile=GitHubActionsWorkflow.pfx /p:PackageCertificatePassword=${{ secrets.Pfx_Key }}
+      env:
+        Appx_Bundle: Always
+        Appx_Bundle_Platforms: x86|x64
+        Appx_Package_Build_Mode: StoreUpload
+        Configuration: ${{ matrix.configuration }}
+
+    # Remove the pfx
+    - name: Remove the pfx
+      run: Remove-Item -path $env:Wap_Project_Directory\GitHubActionsWorkflow.pfx
+
+    # Upload the MSIX package: https://github.com/marketplace/actions/upload-a-build-artifact
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: MSIX Package
+        path: ${{ env.Wap_Project_Directory }}\AppPackages
+
+     - name: Setup Node.js environment
+  uses: actions/setup-node@v6.2.0
+  with:
+    # Version Spec of the version to use. Examples: 12.x, 10.15.1, >=10.15.0.
+    node-version: # optional
+    # File containing the version Spec of the version to use.  Examples: package.json, .nvmrc, .node-version, .tool-versions.
+    node-version-file: # optional
+    # Target architecture for Node to use. Examples: x86, x64. Will use system architecture by default.
+    architecture: # optional
+    # Set this option if you want the action to check for the latest available version that satisfies the version spec.
+    check-latest: # optional
+    # Optional registry to set up for auth. Will set the registry in a project level .npmrc and .yarnrc file, and set up auth to read in from env.NODE_AUTH_TOKEN.
+    registry-url: # optional
+    # Optional scope for authenticating against scoped registries. Will fall back to the repository owner when using the GitHub Packages registry (https://npm.pkg.github.com/).
+    scope: # optional
+    # Used to pull node distributions from node-versions. Since there's a default, this is typically not supplied by the user. When running this action on github.com, the default value is sufficient. When running on GHES, you can pass a personal access token for github.com if you are experiencing rate limiting.
+    token: # optional, default is ${{ github.server_url == 'https://github.com' && github.token || '' }}
+    # Used to specify a package manager for caching in the default directory. Supported values: npm, yarn, pnpm.
+    cache: # optional
+    # Set to false to disable automatic caching. By default, caching is enabled when either devEngines.packageManager or the top-level packageManager field in package.json specifies npm as the package manager.
+    package-manager-cache: # optional, default is true
+    # Used to specify the path to a dependency file: package-lock.json, yarn.lock, etc. Supports wildcards or a list of file names for caching multiple dependencies.
+    cache-dependency-path: # optional
+    # Used to specify an alternative mirror to download Node.js binaries from
+    mirror: # optional
+    # The token used as Authorization header when fetching from the mirror
+    mirror-token: # optional
+
+      - name: Setup .NET Core SDK
+  uses: actions/setup-dotnet@v5.1.0
+  with:
+    # Optional SDK version(s) to use. If not provided, will install global.json version when available. Examples: 2.2.104, 3.1, 3.1.x, 3.x, 6.0.2xx
+    dotnet-version: # optional
+    # Optional quality of the build. The possible values are: daily, signed, validated, preview, ga.
+    dotnet-quality: # optional
+    # Optional global.json location, if your global.json isn't located in the root of the repo.
+    global-json-file: # optional
+    # Optional package source for which to set up authentication. Will consult any existing NuGet.config in the root of the repo and provide a temporary NuGet.config using the NUGET_AUTH_TOKEN environment variable as a ClearTextPassword
+    source-url: # optional
+    # Optional OWNER for using packages from GitHub Package Registry organizations/users other than the current repository's owner. Only used if a GPR URL is also provided in source-url
+    owner: # optional
+    # Optional NuGet.config location, if your NuGet.config isn't located in the root of the repo.
+    config-file: # optional
+    # Optional input to enable caching of the NuGet global-packages folder
+    cache: # optional
+    # Used to specify the path to a dependency file: packages.lock.json. Supports wildcards or a list of file names for caching multiple dependencies.
+    cache-dependency-path: # optional
+
+
+        - name: AWS Lambda Deploy Action
+  # You may pin to the exact commit or the version.
+  # uses: aws-actions/aws-lambda-deploy@29ea35c124579506cf0475e20df36198eb670d89
+  uses: aws-actions/aws-lambda-deploy@v1.1.0
+  with:
+    # Name of the Lambda function.
+    function-name: 
+    # The package type of the Lambda function. Set to "Image" for container image functions, defaults to "Zip" for .zip file functions.
+    package-type: # optional, default is Zip
+    # The URI of the container image in Amazon ECR. Required when package-type is "Image".
+    image-uri: # optional
+    # The path to a directory of code artifacts to zip and deploy to Lambda. Required when package-type is "Zip".
+    code-artifacts-dir: # optional
+    # The name of the method within your code that Lambda calls to run your function. Required when package-type is "Zip".
+    handler: # optional, default is index.handler
+    # The identifier of the runtime. Required when package-type is "Zip".
+    runtime: # optional, default is nodejs20.x
+    # S3 bucket name to use for Lambda deployment package. If provided, S3 deployment method will be used instead of direct upload.
+    s3-bucket: # optional
+    # S3 key for the Lambda deployment package in the bucket. If not provided, a key will be auto-generated using the format: lambda-deployments/{function-name}/{timestamp}-{commit-hash}.zip.
+    s3-key: # optional
+    # Set to true to publish a new version of the function after updating the code.
+    publish: # optional
+    # Set true to validate the request parameters and access permissions without modifying the function code. Applicable for updating function code only. Creating and updating function configuration will be skipped since they do not support dry run.
+    dry-run: # optional, default is false
+    # Update the function only if the revision ID matches the ID that is specified.
+    revision-id: # optional
+    # The instruction set architecture that the function supports.
+    architectures: # optional
+    # The ARN of the Key Management Service (KMS) customer managed key that is used to encrypt your functions .zip deployment package.
+    source-kms-key-arn: # optional
+    # The Amazon Resource Name (ARN) of the functions execution role. Required when creating a new function.
+    role: # optional
+    # A description of the function.
+    function-description: # optional
+    # The amount of memory available to the function at runtime.
+    memory-size: # optional
+    # The amount of time (in seconds) that Lambda allows a function to run before stopping it.
+    timeout: # optional
+    # For network connectivity to Amazon Web Services resources in a VPC, specify a list of security groups and subnets in the VPC.
+    vpc-config: # optional
+    # Environment variables as a JSON string
+    environment: # optional
+    # Specifies the queue or topic where Lambda sends asynchronous events when they fail processing.
+    dead-letter-config: # optional
+    # The ARN of the Key Management Service (KMS) customer managed key
+    kms-key-arn: # optional
+    # Set Mode to Active to sample and trace a subset of incoming requests with X-Ray.
+    tracing-config: # optional
+    # A list of function layers to add to the functions execution environment.
+    layers: # optional
+    # Connection settings for an Amazon EFS file system.
+    file-system-configs: # optional
+    # Configuration for the Lambda functions container image.
+    image-config: # optional
+    # The size of the functions /tmp directory in MB. The default value is 512, but can be any whole number between 512 and 10,240 MB.
+    ephemeral-storage: # optional
+    # The functions SnapStart setting.
+    snap-start: # optional
+    # The Amazon CloudWatch Logs configuration settings for the function.
+    logging-config: # optional
+    # The ARN of a code-signing configuration to use on this function.
+    code-signing-config-arn: # optional
+    # Tags to apply to the function as a JSON string (e.g. {"Environment":"Production","Team":"DevOps"})
+    tags: # optional
+
+         - name: Git Sensei
+  # You may pin to the exact commit or the version.
+  # uses: shivendrasoni/git-sensei-action@4da3d6db12b976acf784ba6417e1321fbe30e8c0
+  uses: shivendrasoni/git-sensei-action@V0.1.0
+
+
+         - name: string-transformer
+  # You may pin to the exact commit or the version.
+  # uses: cloudposse-github-actions/string-transformer@6ebc9304138f9c34a90908146b31f3349ec3b67b
+  uses: cloudposse-github-actions/string-transformer@0.5.0
+  with:
+    # Operation you would like to run on the string, valid values are: `lowercase`, `uppercase`, `kebabcase`, `dns-subdomain`
+    operation: # default is lowercase
+    # The string you'd like to perform the operation on
+    input-string: 
+    # The maximum length of the string, or -1 to not limit the length
+    max-length: # optional, default is -1
+
+         - name: Microsoft Store Publish
+  uses: microsoft/store-submission@v1
+  with:
+    # The type of Store Application. Available options are: `packaged` or `win32`
+    type: # optional, default is packaged
+    # The command to execute. Available command: `configure`, `get`, `update`, `poll`, or `publish`.
+    command: # optional, default is configure
+    # Seller Id
+    seller-id: # optional
+    # Product Id
+    product-id: # optional
+    # AAD Tenant Id
+    tenant-id: # optional
+    # App Client Id
+    client-id: # optional
+    # App Client secret
+    client-secret: # optional
+    # Indicates which module should be queried from the current draft (listing, properties or availability)
+    module-name: # optional
+    # Indicates which listing language should be queries from the current draft
+    listing-language: # optional, default is en
+    # The Json payload that is used to update the package data
+    product-update: # optional
+    # The Json payload that is used to update the metadata data (listing, properties and/or availability)
+    metadata-update: # optional
+    # The Id of the active submission being processed
+    polling-submission-id: # optional
+
+         - name: Microsoft Store App Publisher
+  uses: microsoft/microsoft-store-apppublisher@v1.3
+  with:
+    # The version of the Microsoft Store CLI to be downloaded and configured (e.g. 'v0.3.0').
+    version: # optional, default is latest
+
+         - name: Azure PostgreSQL Action
+  uses: Azure/postgresql@v1.2.0
+  with:
+    # Server name of Azure DB for PostgreSQL. Example: fabrikam.postgres.database.azure.com
+    server-name: 
+    # The connection string, including authentication information, for the Azure PostgreSQL Server. Please provide psql connection string. Example: psql "host={host} port={port} dbname={your_database} user={user} password={your_password} sslmode=require"
+    connection-string: 
+    # Path to PL/SQL script file to deploy. To specify multiple files, use the regex syntax : *.sql or folder/x/<regex>.sql
+    plsql-file: 
+    # Additional options supported by postgresql simple SQL shell. These options will be applied when executing the given file on the Azure DB for Postgresql. In case of multiple files, the same args will be applied for all files
+    arguments: # optional
+
+          - name: Azure Pipelines Action
+  uses: Azure/pipelines@v1.2
+  with:
+    # Fullyqualified URL to the Azure DevOps organization along with project name(eg, https://dev.azure.com/organization/project-name or https://server.example.com:8080/tfs/DefaultCollection/project-name)
+    azure-devops-project-url: 
+    # Name of the Azure Pipline to be triggered
+    azure-pipeline-name: 
+    # Set/Overwrite pipeline variables
+    azure-pipeline-variables: # optional
+    # Paste personal access token of the user as value of secret variable:AZURE_DEVOPS_TOKEN
+    azure-devops-token: 
+          
+
+
+          
+
+    
+          
+          
+             
+          
